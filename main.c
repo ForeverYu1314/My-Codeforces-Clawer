@@ -2,53 +2,47 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <windows.h>     // 提供 Sleep、_access 等 Windows API
+#include <windows.h>     
 #include <io.h>           // 提供 _access 函数（检查文件是否存在）
-#include <curl/curl.h>   // libcurl 库，用于发送 HTTP 请求
-#include "cJSON.h"       // 第三方 JSON 解析库
+#include <curl/curl.h>  
+#include "cJSON.h"       
 
-/*---------- 常量定义 ----------*/
 #define API_BASE "https://codeforces.com/api/"
 #define USER_AGENT "CFClawer/2.3"
 #define MAX_HANDLES 100    // 最多同时处理的用户数
 
-
-/*---------- 结构体定义 ----------*/
-
-// 用户基本信息
 typedef struct {
-    char handle[50];      // Codeforces 用户名，使用字符数组，方便free
-    int rating;           // 当前 Rating
-    int maxRating;        // 历史最高 Rating
-    char rank[50];        // 头衔字符串（如 "Newbie"）
+    char handle[50];     
+    int rating;           
+    int maxRating;        
+    char rank[50];        // 头衔字符串
     char avatar[200];     // 头像的地址
 } UserInfo;
 
-// 一场比赛的 Rating 变化记录
+// 一场比赛的 Rating 变化
 typedef struct {
-    int contestId;        // 比赛 ID
-    char contestName[200];// 比赛名称
-    int rank;             // 用户在该场比赛中的排名
-    int oldRating;        // 赛前 Rating
-    int newRating;        // 赛后 Rating
-    long long updateTime; // Rating 更新时间（Unix 时间戳，自1970年秒数）
+    int contestId;   
+    char contestName[200];
+    int rank;            
+    int oldRating;     
+    int newRating;   
+    long long updateTime; // Rating 更新时间（Unix 时间戳）
 } RatingChange;
 
-// 一次提交记录
+// 一次提交
 typedef struct {
-    int contestId;        // 所属比赛 ID（0 表示非比赛提交）
+    int contestId;       
     char index[5];        // 题目编号
     char name[200];       // 题目名称
     int rating;           // 题目难度，若无则为 0
     char verdict[30];     // 评测结果
-    long long creationTime; // 提交时间（Unix 时间戳）
-    double points;        // 该次提交获得的分数（多数比赛为 0）
+    long long creationTime; // 提交时间
+    double points;        // 该次提交获得的分数
 } Submission;
 
-// 比赛信息（来自 contest.list 接口）
 typedef struct {
-    int contestId;        // 比赛 ID
-    long long startTime;  // 比赛开始时间（Unix 时间戳）
+    int contestId;       
+    long long startTime;  
     int duration;         // 比赛时长（秒）
 } ContestInfo;
 
@@ -56,18 +50,15 @@ typedef struct {
 typedef struct {
     UserInfo user;        // 用户基础信息
     int contestCount;     // 参加的比赛总次数
-    int maxRating;        // 最高 Rating
+    int maxRating;        
     int recent180Contests;// 近 180 天的比赛次数
     int recent180MaxRating; // 近 180 天的最高 Rating
 } MultiUserSummary;
 
-/*---------- 辅助函数 ----------*/
 
-/**
- * 根据 Rating 返回对应的 CSS 颜色代码（Codeforces 段位颜色）。
- * rating：用户的当前 Rating
- * 返回值：颜色字符串，如 "#77ff77"
- */
+
+ //根据 Rating 返回对应的 CSS 颜色代码（Codeforces 段位颜色）。
+ //返回值：颜色字符串，如 "#77ff77"
 static const char* rating_color(int rating) {
     if (rating < 1200) return "#cccccc";
     if (rating < 1400) return "#77ff77";
@@ -78,12 +69,11 @@ static const char* rating_color(int rating) {
     if (rating < 2400) return "#ffbb55";
     if (rating < 2600) return "#ff7777";
     if (rating < 3000) return "#ff3333";
-    return "#aa0000";   // 传说级
+    return "#aa0000"; 
 }
 
-/**
- * 根据 Rating 返回对应的头衔名称。
- */
+
+ //根据 Rating 返回对应的头衔名称。
 static const char* rank_name(int rating) {
     if (rating < 1200) return "Newbie";
     if (rating < 1400) return "Pupil";
@@ -97,18 +87,11 @@ static const char* rank_name(int rating) {
     return "Legendary Grandmaster";
 }
 
-/**
- * 判断时间戳 t 是否在最近 days 天内。
- * t：Unix 时间戳（秒）
- * days：天数
- * 返回：1 表示在范围内，0 表示不在
- */
+ //判断时间戳 t 是否在最近 days 天内。 
 static int within_days(long long t, int days) {
     long long now = (long long)time(NULL);      // 获取当前时间戳
-    return t >= now - (long long)days * 86400;  // 86400 是一天的秒数
+    return t >= now - (long long)days * 86400;  
 }
-
-/*---------- libcurl + cJSON 底层封装 ----------*/
 
 // 用于接收 HTTP 响应的动态缓冲区
 struct string_buffer {
@@ -116,17 +99,17 @@ struct string_buffer {
     size_t size;     // 已使用的大小
 };
 
-/**
- * libcurl 回调函数，每收到一块数据就会调用，将数据追加到 string_buffer 中。
- * contents：指向收到数据的指针
- * size：每个数据单元的大小
- * nmemb：数据单元的数量
- * userp：用户自定义指针，我们传入的是 struct string_buffer 的地址
- * 返回：实际写入的字节数（等于接收到的字节数）
+/*
+  libcurl 回调函数，每收到一块数据就会调用，将数据追加到 string_buffer 中。
+  contents：指向收到数据的指针
+  size：每个数据单元的大小
+  nmemb：数据单元的数量
+  userp： struct string_buffer 的地址
+  返回：实际接收到的字节数
  */
 static size_t write_cb(void *contents, size_t size, size_t nmemb, void *userp) {
     size_t realsize = size * nmemb;                            // 本次收到的总字节数
-    struct string_buffer *mem = (struct string_buffer *)userp; // 强转回我们的缓冲区结构体
+    struct string_buffer *mem = (struct string_buffer *)userp; // 强转回缓冲区结构体
     // 动态扩大缓冲区，多留一个字节用于存放字符串结束符 '\0'
     char *ptr = realloc(mem->data, mem->size + realsize + 1);
     if (!ptr) return 0;                     // 内存不足时返回 0 会导致 curl 报错
@@ -137,25 +120,24 @@ static size_t write_cb(void *contents, size_t size, size_t nmemb, void *userp) {
     return realsize;
 }
 
-/**
- * 发送 GET 请求并返回解析好的 cJSON 对象。
- * url：完整的 API 地址
- * 返回：如果请求成功且 API 状态为 "OK"，返回 cJSON 指针；否则返回 NULL。
- * 注意：外部调用后必须 cJSON_Delete(json) 释放资源。
+/*
+  发送 GET 请求并返回解析好的 cJSON 对象。
+  url：完整的 API 地址
+  返回：如果请求成功且 API 状态为 "OK"，返回 cJSON 指针；否则返回 NULL。
  */
 static cJSON* api_get(const char *url) {
-    CURL *curl = curl_easy_init();          // 初始化一个 curl 句柄（相当于一个会话）
+    CURL *curl = curl_easy_init();
     if (!curl) {
         fprintf(stderr, "curl init failed\n");
         return NULL;
     }
 
-    struct string_buffer buf = {0};         // 响应数据缓冲区初始为空
-    curl_easy_setopt(curl, CURLOPT_URL, url);               // 设置请求的 URL
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, USER_AGENT);   // 设置 User-Agent，代表程序身份
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb); // 设置回调函数，用于接收数据
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);         // 将缓冲区地址传给回调
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);           // 超时时间 30 秒
+    struct string_buffer buf = {0};        
+    curl_easy_setopt(curl, CURLOPT_URL, url);               
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, USER_AGENT);  
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb); 
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);      
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);        
 
     CURLcode res = curl_easy_perform(curl);  // 执行网络请求
     curl_easy_cleanup(curl);                 // 清理 curl 句柄，释放资源
@@ -182,39 +164,31 @@ static cJSON* api_get(const char *url) {
         cJSON_Delete(json);  // 释放 JSON 对象
         return NULL;
     }
-    Sleep(500);   //改进
+    Sleep(500);   
     return json;  // 调用者负责 cJSON_Delete
 }
 
-/*---------- 业务 API 封装函数 ----------*/
 
-/**
- * 获取用户基本信息。
- * handle：Codeforces 用户名
- * 返回：填充好的 UserInfo 结构体。若失败，handle[0] 为 '\0'
- */
 UserInfo get_user_info(const char *handle) {
-    UserInfo user = {0};  // 全部字段初始化为 0
+    UserInfo user = {0};  
     char url[256];
-    // 拼接请求 URL，例如：https://codeforces.com/api/user.info?handles=tourist
+    // 拼接请求 URL
     snprintf(url, sizeof(url), API_BASE "user.info?handles=%s", handle);
     cJSON *json = api_get(url);
     if (!json) return user;
-
-    // CF 的这个接口 result 是一个数组，我们取第一个元素
     cJSON *result = cJSON_GetObjectItem(json, "result");
     if (cJSON_GetArraySize(result) > 0) {
         cJSON *u = cJSON_GetArrayItem(result, 0);
         cJSON *h = cJSON_GetObjectItem(u, "handle");
-        if (h) strncpy(user.handle, h->valuestring, 49);  // 安全拷贝字符串，最多49个字符
+        if (h) strncpy(user.handle, h->valuestring, 49); 
         cJSON *r = cJSON_GetObjectItem(u, "rating");
-        user.rating = r ? r->valueint : 0;    // 三元表达式：如果字段存在取整数值，否则为 0
+        user.rating = r ? r->valueint : 0;  
         cJSON *mr = cJSON_GetObjectItem(u, "maxRating");
         user.maxRating = mr ? mr->valueint : 0;
         cJSON *rk = cJSON_GetObjectItem(u, "rank");
         if (rk) strncpy(user.rank, rk->valuestring, 49);
         else if (user.rating) strncpy(user.rank, rank_name(user.rating), 49);
-        else strcpy(user.rank, "Unrated");   // rating 为 0 时头衔为 Unrated
+        else strcpy(user.rank, "Unrated");  
         cJSON *av = cJSON_GetObjectItem(u, "avatar");
         if (av) strncpy(user.avatar, av->valuestring, 199);
     }
@@ -222,12 +196,7 @@ UserInfo get_user_info(const char *handle) {
     return user;
 }
 
-/**
- * 获取用户的所有 Rating 变化记录。
- * handle：用户名
- * count：输出参数，保存数组长度
- * 返回：动态分配的 RatingChange 数组，调用者需要 free
- */
+//获取用户的所有 Rating 变化记录。
 RatingChange* get_user_rating(const char *handle, int *count) {
     *count = 0;
     char url[256];
@@ -244,7 +213,6 @@ RatingChange* get_user_rating(const char *handle, int *count) {
         cJSON *item = cJSON_GetArrayItem(result, i);
         RatingChange *rc = &arr[i];
         rc->contestId = cJSON_GetObjectItem(item, "contestId")->valueint;
-        // 安全拷贝比赛名称，限制 199 个字符
         strncpy(rc->contestName, cJSON_GetObjectItem(item, "contestName")->valuestring, 199);
         rc->rank = cJSON_GetObjectItem(item, "rank")->valueint;
         rc->oldRating = cJSON_GetObjectItem(item, "oldRating")->valueint;
@@ -256,49 +224,30 @@ RatingChange* get_user_rating(const char *handle, int *count) {
     return arr;
 }
 
-/**
- * 获取用户的所有提交记录（自动分页，最多取完）。
- * handle：用户名
- * count：输出参数，返回提交记录条数
- * 返回：动态分配的 Submission 数组，调用者需要 free
- */
-/*
- * 获取用户的所有提交记录
- * 采用单次全量请求，规避频繁分页造成的网络截断与内存碎片
- */
+// 获取用户的所有提交记录（自动分页，最多取完）。
 Submission *get_user_status(const char *handle, int *count)
 {
         char url[256];
         cJSON *json, *result;
         int n;
         Submission *all_subs = NULL;
-
         *count = 0;
-
-        /* 忽略 from 和 count 参数，单次请求全量数据 */
-        snprintf(url, sizeof(url),
-                 "https://codeforces.com/api/user.status?handle=%s",
-                 handle);
-
+        snprintf(url, sizeof(url),"https://codeforces.com/api/user.status?handle=%s",handle);
         json = api_get(url);
-        if (!json)
-                return NULL;
-
+        if (!json) return NULL;
         result = cJSON_GetObjectItem(json, "result");
         n = cJSON_GetArraySize(result);
         if (n == 0) {
                 cJSON_Delete(json);
                 return NULL;
         }
-
-        /* 一次性分配动态内存，避免在循环中频繁使用 realloc */
+    
+        //一次性分配动态内存，避免在循环中频繁使用 realloc
         all_subs = malloc(n * sizeof(Submission));
         if (!all_subs) {
                 cJSON_Delete(json);
                 return NULL;
         }
-
-        /* 遍历解析到动态数组，严格控制指针偏移 */
         for (int i = 0; i < n; i++) {
                 cJSON *sub = cJSON_GetArrayItem(result, i);
                 cJSON *prob = cJSON_GetObjectItem(sub, "problem");
@@ -313,37 +262,27 @@ Submission *get_user_status(const char *handle, int *count)
                 if (prob) {
                         cJSON *idx = cJSON_GetObjectItem(prob, "index");
                         strncpy(s->index, idx ? idx->valuestring : "?", 4);
-
                         cJSON *name = cJSON_GetObjectItem(prob, "name");
                         strncpy(s->name, name ? name->valuestring : "", 199);
-
                         cJSON *rating = cJSON_GetObjectItem(prob, "rating");
                         s->rating = rating ? rating->valueint : 0;
                 }
 
                 cJSON *ver = cJSON_GetObjectItem(sub, "verdict");
                 strncpy(s->verdict, ver ? ver->valuestring : "UNKNOWN", 29);
-
                 s->creationTime = (long long)cJSON_GetObjectItem(sub,
                                 "creationTimeSeconds")->valuedouble;
-
                 cJSON *pts = cJSON_GetObjectItem(sub, "points");
                 s->points = pts ? pts->valuedouble : 0.0;
         }
-
         *count = n;
         cJSON_Delete(json);
         return all_subs;
 }
 
-/**
- * 获取所有公开比赛的基本信息（开始时间、时长）。
- * cnt：输出参数，返回比赛总数
- * 返回：ContestInfo 数组，调用者需要 free
- */
 ContestInfo* get_contest_list(int *cnt) {
     *cnt = 0;
-    cJSON *json = api_get(API_BASE "contest.list?gym=false");  // gym=false 排除非正式赛
+    cJSON *json = api_get(API_BASE "contest.list?gym=false");  //排除非正式赛
     if (!json) return NULL;
 
     cJSON *result = cJSON_GetObjectItem(json, "result");
@@ -362,27 +301,14 @@ ContestInfo* get_contest_list(int *cnt) {
     return arr;
 }
 
-/**
- * 在比赛列表中按 ID 查找某场比赛。
- * list：ContestInfo 数组
- * cnt：数组长度
- * id：需要查找的比赛 ID
- * 返回：指向该比赛信息的指针，如果未找到返回 NULL
- */
 ContestInfo* find_contest(ContestInfo *list, int cnt, int id) {
     for (int i = 0; i < cnt; i++)
         if (list[i].contestId == id) return &list[i];
     return NULL;
 }
 
-/*---------- 文件读取与 HTML 生成 ----------*/
 
-/**
- * 读取多用户列表文件，每行一个 handle。
- * filename：文件路径
- * count：输出参数，返回读取到的 handle 数量
- * 返回：字符串数组（每个元素是一个动态分配的 handle），调用者需要逐项 free
- */
+//读取多用户列表文件，每行一个 handle。
 static char** read_handle_list(const char *filename, int *count) {
     FILE *f = fopen(filename, "r");
     if (!f) { perror("fopen"); return NULL; }  // perror 输出系统错误信息
@@ -395,32 +321,26 @@ static char** read_handle_list(const char *filename, int *count) {
     while (fgets(line, sizeof(line), f) && *count < MAX_HANDLES) {
         line[strcspn(line, "\r\n")] = 0;    // 去掉行尾的换行符（Windows 可能 \r\n）
         if (line[0] == '#' || line[0] == '\0') continue; // 跳过注释和空行
-        handles[*count] = _strdup(line);    // _strdup 是 Windows 下的字符串复制函数，等价于 malloc+strcpy
+        handles[*count] = _strdup(line);    // _strdup ：Windows 下的字符串复制函数，等价于 malloc+strcpy
         (*count)++;
     }
     fclose(f);
     return handles;
 }
 
-/**
- * 生成多用户总览页面（index.html）。
- * summaries：各用户的汇总信息数组
- * n：用户数量
- * dir：输出目录
- */
+//生成多用户总览页面（index.html）。
 static void generate_index(MultiUserSummary *summaries, int n, const char *dir) {
     char path[260];
     snprintf(path, sizeof(path), "%s/index.html", dir);
     FILE *f = fopen(path, "w");
     if (!f) return;
-
     // 写入 HTML 头部和 CSS 样式
     fputs("<!DOCTYPE html><html><head><meta charset='UTF-8'><title>CF Users</title>"
           "<style>body{background:#1a1a1a;color:#fff;font-family:Arial}"
           "table{border-collapse:collapse;width:100%}"
           "th,td{padding:10px;border:1px solid #444;text-align:center}"
           "a{text-decoration:none}</style></head><body><h1>Codeforces Users</h1><table>\n", f);
-
+    
     // 表头
     fputs("<tr><th>Handle</th><th>Rating</th><th>Rank</th><th>Contests</th><th>Max Rating</th><th>180d Ct</th><th>180d Max</th></tr>\n", f);
 
@@ -438,7 +358,7 @@ static void generate_index(MultiUserSummary *summaries, int n, const char *dir) 
     fclose(f);
 }
 
-/* 记录用户通过题目的信息，用于难度统计与去重 */
+// 记录用户通过题目的信息，用于难度统计与去重
 typedef struct {
     int contest_id;
     char index[5];
@@ -446,14 +366,14 @@ typedef struct {
     long long pass_time;
 } passed_t;
 
-/* 记录单场比赛中单道题的通过状态（赛内/补题） */
+// 记录单场比赛中单道题的通过状态（赛内/补题）
 typedef struct {
     char idx[5];
     int in_contest_ac;
     int upsolved_ac;
 } prob_status_t;
 
-/* 比较逻辑：优先按比赛 ID 升序，若 ID 相同则按题目编号字典序升序 */
+//比较逻辑：优先按比赛 ID 升序，若 ID 相同则按题目编号字典序升序 
 static int compare_passed(const void *a, const void *b) {
     const passed_t *pa = (const passed_t *)a;
     const passed_t *pb = (const passed_t *)b;
@@ -464,27 +384,17 @@ static int compare_passed(const void *a, const void *b) {
     return strcmp(pa->index, pb->index);
 }
 
-/* 比较逻辑：按题目编号字典序升序排列 (如 A, B, C, D1, D2) */
+// 比较逻辑：按题目编号字典序升序排列 (如 A, B, C, D1, D2)
 static int compare_prob_status(const void *a, const void *b) {
     const prob_status_t *pa = (const prob_status_t *)a;
     const prob_status_t *pb = (const prob_status_t *)b;
     return strcmp(pa->idx, pb->idx);
 }
 
-
-/* ========================================================================= *
- * 3. 核心业务函数：生成单用户页面
- * ========================================================================= */
-
-/**
- * generate_user_page - 生成单用户详细分析页面（handle.html）
- * handle: 用户名
- * dir: 输出目录
- */
+// 生成单用户详细分析页面
 static void generate_user_page(const char *handle, const char *dir) {
     printf("Processing user: %s\n", handle);
 
-    // 1. 获取各类数据
     UserInfo info = get_user_info(handle);
     if (info.handle[0] == 0) {
         fprintf(stderr, "Failed to get info for %s\n", handle);
@@ -497,7 +407,6 @@ static void generate_user_page(const char *handle, const char *dir) {
     int clist_cnt;
     ContestInfo *clist = get_contest_list(&clist_cnt);
 
-    // 2. 计算统计数据
     int max_rating = info.maxRating;
     int contest_all = rating_count;
     int recent_180 = 0, recent_180_max = 0;
@@ -510,7 +419,6 @@ static void generate_user_page(const char *handle, const char *dir) {
         }
     }
 
-    // 3. 准备难度直方图数据
     typedef struct {
         int rating; int all, y1, y180, y30;
     } bin_t;
@@ -519,7 +427,6 @@ static void generate_user_page(const char *handle, const char *dir) {
     for (int r = 800; r <= 3500; r += 100)
         bins[bin_count++] = (bin_t){r, 0, 0, 0, 0};
 
-    // 4. 收集所有正确提交，并排序去重
     passed_t *passed = malloc(sub_count * sizeof(passed_t));
     if (!passed) {
         free(ratings); free(subs); free(clist);
@@ -545,13 +452,12 @@ static void generate_user_page(const char *handle, const char *dir) {
         if (i > 0 &&
             passed[i].contest_id == passed[i - 1].contest_id &&
             strcmp(passed[i].index, passed[i - 1].index) == 0) {
-            continue; /* 跳过重复 AC */
+            continue; 
         }
         passed[unique_cnt++] = passed[i];
     }
     passed_cnt = unique_cnt;
 
-    // 分配难度箱子
     for (int i = 0; i < passed_cnt; i++) {
         if (passed[i].rating <= 0) continue;
         int bin = (passed[i].rating - 800) / 100;
@@ -562,8 +468,7 @@ static void generate_user_page(const char *handle, const char *dir) {
         if (within_days(passed[i].pass_time, 30))  bins[bin].y30++;
     }
     free(passed);
-
-    // 5. 生成 HTML 文件
+    
     char path[260];
     snprintf(path, sizeof(path), "%s/%s.html", dir, handle);
     FILE *f = fopen(path, "w");
@@ -678,8 +583,7 @@ static void generate_user_page(const char *handle, const char *dir) {
                     probs[found].upsolved_ac = 1;
             }
         }
-
-        /* 单场比赛内部按题号字母序排序显示 */
+        //题目按顺序显示
         if (prob_count > 0) {
             qsort(probs, prob_count, sizeof(prob_status_t),
                   compare_prob_status);
@@ -751,17 +655,15 @@ static void generate_user_page(const char *handle, const char *dir) {
     free(clist);
     printf("Done: %s\n", path);
 }
-/*---------- 主函数：命令行参数解析与调度 ----------*/
+
 int main(int argc, char *argv[]) {
     const char *input = NULL;       // 输入的用户名或文件名
-    const char *output_dir = "output";   // 输出目录，默认为当前目录
+    const char *output_dir = "output";   // 输出目录，默认为output
     char buffer[100];
 
-    // 1. 解析命令行参数
     if (argc >= 2) {
         input = argv[1];            // 第一个参数作为输入
     } else {
-        // 无参数时交互式询问用户名
         printf("Enter Codeforces handle: ");
         if (fgets(buffer, sizeof(buffer), stdin)) {
             buffer[strcspn(buffer, "\r\n")] = 0; // 去除末尾换行符
@@ -775,19 +677,15 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // 2. 创建输出目录（如果不存在），Windows 命令
     char cmd[300];
     snprintf(cmd, sizeof(cmd), "mkdir \"%s\" 2>nul", output_dir);
     system(cmd);
 
-    // 3. 判断输入是文件（多用户）还是单个 handle
-    //    _access 检查文件是否存在，返回 0 表示存在
+    //  判断输入是文件（多用户）还是单个 handle
     int is_file = (_access(input, 0) == 0) ? 1 : 0;
-    // 如果没有扩展名，即使文件存在也大概率是故意输入的用户名，按单用户处理
     if (is_file && strchr(input, '.') == NULL) is_file = 0;
 
     if (is_file) {
-        // ---------- 多用户模式 ----------
         int count;
         char **handles = read_handle_list(input, &count);
         if (!handles) {
@@ -816,14 +714,13 @@ int main(int argc, char *argv[]) {
             // 生成个人页面
             generate_user_page(handles[i], output_dir);
             free(handles[i]);
-            Sleep(2000);  // 用户间暂停 2 秒，减轻 API 压力
+            Sleep(1000);  // 用户间暂停 1 秒，减轻 API 压力
         }
         free(handles);
         // 生成总览页
         generate_index(summaries, count, output_dir);
         free(summaries);
     } else {
-        // ---------- 单用户模式 ----------
         generate_user_page(input, output_dir);
     }
 
